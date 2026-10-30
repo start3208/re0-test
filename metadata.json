@@ -1,0 +1,6 @@
+{
+  "name": "Re:ZERO 异世界灵魂共鸣测试 — 测一下你是Re0里的谁（含IF线）",
+  "description": "抛弃传统MBTI框架的高网感Re:0角色与大罪IF线性格测试。融合PDB人格档案、死亡回归抉择复盘、无背景Q版角色插画与社交平台分享海报生成。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
