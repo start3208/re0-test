@@ -80,7 +80,7 @@ export const CharacterCodex: React.FC<CharacterCodexProps> = ({
                 <span>返回角色列表 ({filteredList.length})</span>
               </button>
             ) : (
-              <h3 className="font-black text-slate-900 text-sm sm:text-base">
+              <h3 className="md:hidden font-black text-slate-900 text-sm sm:text-base">
                 Re:0 全角色结局图鉴（共 {CHARACTER_LIST.length} 人）
               </h3>
             )}

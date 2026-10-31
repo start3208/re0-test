@@ -44,45 +44,112 @@ export const DIMENSION_COLORS: Record<keyof SoulDimensions, string> = {
   wit: '#F59E0B',
 };
 
+interface CharacterCalibrationStats {
+  directMean: number;
+  directStd: number;
+  maxDirect: number;
+  unitTraitDir: SoulDimensions;
+  traitProjMean: number;
+  traitProjStd: number;
+}
+
 /**
- * Precompute the maximum achievable direct points per character across all 20 questions
- * so that affinity ratios are normalized fairly across all 36 characters.
+ * Precompute exact analytical mean, standard deviation, and 5D directional unit vectors
+ * for all 36 characters across the 20 questions so no character suffers from
+ * 5D hubness bias or question-count denominator penalty.
  */
-const MAX_POSSIBLE_DIRECT_POINTS: Record<CharacterId, number> = (() => {
-  const maxMap = {} as Record<CharacterId, number>;
+const CHARACTER_CALIBRATION: Record<CharacterId, CharacterCalibrationStats> = (() => {
+  const meanCharDims: SoulDimensions = {
+    obsession: 0,
+    sanity: 0,
+    ruthlessness: 0,
+    empathy: 0,
+    wit: 0,
+  };
   for (const char of CHARACTER_LIST) {
-    maxMap[char.id] = 0;
+    for (const dim of ALL_DIMENSIONS) {
+      meanCharDims[dim] += char.dimensions[dim] / CHARACTER_LIST.length;
+    }
   }
-  for (const q of QUIZ_QUESTIONS) {
-    const bestForQuestion: Partial<Record<CharacterId, number>> = {};
-    for (const c of q.choices) {
-      for (const [charId, pts] of Object.entries(c.characterWeights)) {
-        const id = charId as CharacterId;
-        if (pts && pts > (bestForQuestion[id] ?? 0)) {
-          bestForQuestion[id] = pts;
+
+  const stats = {} as Record<CharacterId, CharacterCalibrationStats>;
+
+  for (const char of CHARACTER_LIST) {
+    // 1. Unit direction vector of character in 5D space relative to roster centroid
+    let normSq = 0;
+    const centered: SoulDimensions = {
+      obsession: 0,
+      sanity: 0,
+      ruthlessness: 0,
+      empathy: 0,
+      wit: 0,
+    };
+    for (const dim of ALL_DIMENSIONS) {
+      centered[dim] = char.dimensions[dim] - meanCharDims[dim];
+      normSq += centered[dim] * centered[dim];
+    }
+    const norm = Math.sqrt(normSq) || 1;
+    const unitTraitDir: SoulDimensions = {
+      obsession: centered.obsession / norm,
+      sanity: centered.sanity / norm,
+      ruthlessness: centered.ruthlessness / norm,
+      empathy: centered.empathy / norm,
+      wit: centered.wit / norm,
+    };
+
+    // 2. Exact analytical mean & variance of direct points and 5D trait projection across 20 questions
+    let directMean = 0;
+    let directVar = 0;
+    let maxDirect = 0;
+    let traitProjMean = 0;
+    let traitProjVar = 0;
+
+    for (const q of QUIZ_QUESTIONS) {
+      const wVals = q.choices.map((c) => c.characterWeights[char.id] ?? 0);
+      const qMax = Math.max(...wVals);
+      maxDirect += qMax;
+
+      const qMean = wVals.reduce((a, b) => a + b, 0) / 4;
+      const qVar = wVals.reduce((acc, w) => acc + (w - qMean) * (w - qMean), 0) / 4;
+      directMean += qMean;
+      directVar += qVar;
+
+      const projVals = q.choices.map((c) => {
+        let p = 0;
+        for (const dim of ALL_DIMENSIONS) {
+          p += (c.dimensionDelta[dim] ?? 0) * unitTraitDir[dim];
         }
-      }
+        return p;
+      });
+      const pMean = projVals.reduce((a, b) => a + b, 0) / 4;
+      const pVar = projVals.reduce((acc, p) => acc + (p - pMean) * (p - pMean), 0) / 4;
+      traitProjMean += pMean;
+      traitProjVar += pVar;
     }
-    for (const [charId, pts] of Object.entries(bestForQuestion)) {
-      const id = charId as CharacterId;
-      if (pts) {
-        maxMap[id] += pts;
-      }
-    }
+
+    stats[char.id] = {
+      directMean,
+      directStd: Math.sqrt(directVar) || 1,
+      maxDirect: Math.max(60, maxDirect),
+      unitTraitDir,
+      traitProjMean,
+      traitProjStd: Math.sqrt(traitProjVar) || 1,
+    };
   }
-  return maxMap;
+
+  return stats;
 })();
 
 /**
  * Pure deterministic scoring engine for the 36-character, 20-question Re:Zero SBTI quiz.
  */
 export function evaluateQuizAnswers(answers: QuizAnswerMap): QuizEvaluationResult {
-  const rawTraits: SoulDimensions = {
-    obsession: 50,
-    sanity: 50,
-    ruthlessness: 50,
-    empathy: 50,
-    wit: 50,
+  const deltaSum: SoulDimensions = {
+    obsession: 0,
+    sanity: 0,
+    ruthlessness: 0,
+    empathy: 0,
+    wit: 0,
   };
 
   const directPoints = {} as Record<CharacterId, number>;
@@ -102,8 +169,7 @@ export function evaluateQuizAnswers(answers: QuizAnswerMap): QuizEvaluationResul
     roastTags.push(choice.roastTag);
 
     for (const dim of ALL_DIMENSIONS) {
-      const delta = choice.dimensionDelta[dim] ?? 0;
-      rawTraits[dim] += delta * 0.55;
+      deltaSum[dim] += choice.dimensionDelta[dim] ?? 0;
     }
 
     for (const [charId, pts] of Object.entries(choice.characterWeights)) {
@@ -114,50 +180,69 @@ export function evaluateQuizAnswers(answers: QuizAnswerMap): QuizEvaluationResul
     }
   }
 
+  // Normalized 5D display bars (centered at 55 with dynamic range across 5..99)
   const normalizedTraits: SoulDimensions = {
-    obsession: Math.max(5, Math.min(99, Math.round(rawTraits.obsession))),
-    sanity: Math.max(5, Math.min(99, Math.round(rawTraits.sanity))),
-    ruthlessness: Math.max(5, Math.min(99, Math.round(rawTraits.ruthlessness))),
-    empathy: Math.max(5, Math.min(99, Math.round(rawTraits.empathy))),
-    wit: Math.max(5, Math.min(99, Math.round(rawTraits.wit))),
+    obsession: Math.max(8, Math.min(99, Math.round(55 + deltaSum.obsession * 0.55))),
+    sanity: Math.max(8, Math.min(99, Math.round(55 + deltaSum.sanity * 0.55))),
+    ruthlessness: Math.max(8, Math.min(99, Math.round(55 + deltaSum.ruthlessness * 0.55))),
+    empathy: Math.max(8, Math.min(99, Math.round(55 + deltaSum.empathy * 0.55))),
+    wit: Math.max(8, Math.min(99, Math.round(55 + deltaSum.wit * 0.55))),
   };
 
-  const rankings: CharacterScoreEntry[] = CHARACTER_LIST.map((char) => {
+  const rawRankingData = CHARACTER_LIST.map((char) => {
+    const cal = CHARACTER_CALIBRATION[char.id];
+
+    // 1. Standardized direct choice Z-score
+    const pts = directPoints[char.id] || 0;
+    const directZ = (pts - cal.directMean) / cal.directStd;
+
+    // 2. Standardized 5D directional projection Z-score
+    let rawProj = 0;
     let sumSquaredDiff = 0;
     for (const dim of ALL_DIMENSIONS) {
+      rawProj += deltaSum[dim] * cal.unitTraitDir[dim];
       const diff = normalizedTraits[dim] - char.dimensions[dim];
       sumSquaredDiff += diff * diff;
     }
+    const traitZ = (rawProj - cal.traitProjMean) / cal.traitProjStd;
     const euclideanDist = Math.sqrt(sumSquaredDiff);
-    const maxPossibleDist = 175;
-    const vectorSimilarity = Math.max(0, 100 * (1 - euclideanDist / maxPossibleDist));
 
-    // Normalized direct choice affinity (0..100 scale)
-    const maxPossible = Math.max(60, MAX_POSSIBLE_DIRECT_POINTS[char.id] || 100);
-    const directAffinity = Math.min(100, ((directPoints[char.id] || 0) / maxPossible) * 100);
+    // Combined composite Z-score (mean 0, std ~1 across all 36 characters)
+    const compositeZ = directZ * 0.72 + traitZ * 0.38;
 
-    const combinedScore = Math.min(
+    const matchPercentage = Math.min(
       99,
-      Math.max(40, Math.round(vectorSimilarity * 0.52 + directAffinity * 0.62))
+      Math.max(42, Math.round(64 + compositeZ * 11.5))
     );
 
     return {
       character: char,
-      matchPercentage: combinedScore,
-      rawDistance: Math.round(euclideanDist * 10) / 10,
-      directPointBonus: directPoints[char.id] || 0,
+      matchPercentage,
+      rawDistance: Math.round((100 - compositeZ * 10) * 10) / 10,
+      directPointBonus: pts,
+      compositeZ,
+      euclideanDist,
     };
   });
 
-  rankings.sort((a, b) => {
-    if (b.matchPercentage !== a.matchPercentage) {
-      return b.matchPercentage - a.matchPercentage;
+  rawRankingData.sort((a, b) => {
+    if (Math.abs(b.compositeZ - a.compositeZ) > 1e-6) {
+      return b.compositeZ - a.compositeZ;
     }
     if (b.directPointBonus !== a.directPointBonus) {
       return b.directPointBonus - a.directPointBonus;
     }
-    return a.rawDistance - b.rawDistance;
+    return a.euclideanDist - b.euclideanDist;
   });
+
+  const rankings: CharacterScoreEntry[] = rawRankingData.map(
+    ({ character, matchPercentage, rawDistance, directPointBonus }) => ({
+      character,
+      matchPercentage,
+      rawDistance,
+      directPointBonus,
+    })
+  );
 
   const primaryMatch = rankings[0];
   const secondaryMatch = rankings[1] ?? rankings[0];
